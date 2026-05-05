@@ -1,103 +1,107 @@
-using Marketplace.Domain.Entities;
+using Marketplace.Application.DTOs.Auth;
+using Marketplace.Application.Services;
 using Microsoft.AspNetCore.Mvc;
-using System.Security.Cryptography;
-using System.Text;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
-using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
-using Microsoft.Extensions.Logging;
 
-namespace MarketplaceBackend.Controllers;
+namespace Marketplace.API.Controllers;
 
+/// <summary>
+/// Authentication controller
+/// Handles user registration and login
+/// </summary>
 [ApiController]
 [Route("api/[controller]")]
+[Produces("application/json")]
 public class AuthController : ControllerBase
 {
-    private readonly MarketplaceDbContext _db;
-    private readonly IConfiguration _config;
+    private readonly IAuthService _authService;
     private readonly ILogger<AuthController> _logger;
 
-    public AuthController(MarketplaceDbContext db, IConfiguration config, ILogger<AuthController> logger)
+    public AuthController(IAuthService authService, ILogger<AuthController> logger)
     {
-        _db = db;
-        _config = config;
+        _authService = authService;
         _logger = logger;
     }
 
+    /// <summary>
+    /// Register a new user
+    /// </summary>
+    /// <param name="request">Registration details</param>
+    /// <returns>Success message</returns>
+    /// <response code="200">Registration successful</response>
+    /// <response code="400">Invalid request or email already in use</response>
+    /// <response code="500">Server error</response>
     [HttpPost("register")]
-    public async Task<IActionResult> Register([FromBody] MarketplaceBackend.DTOs.RegisterDto dto, [FromServices] MarketplaceBackend.Interfaces.IAuthService auth)
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+    public async Task<IActionResult> Register([FromBody] RegisterRequest request)
     {
-        if (dto is null)
-            return BadRequest(new { message = "Request body is required." });
-
-        // Basic validation - service will perform more checks
-        if (string.IsNullOrWhiteSpace(dto.email) || string.IsNullOrWhiteSpace(dto.password) || string.IsNullOrWhiteSpace(dto.name))
-            return BadRequest(new { message = "Name, email and password are required." });
-
         try
         {
-            await auth.RegisterAsync(dto);
+            if (request == null)
+                return BadRequest(new { message = "Request body is required." });
+
+            if (string.IsNullOrWhiteSpace(request.Email) ||
+                string.IsNullOrWhiteSpace(request.Password) ||
+                string.IsNullOrWhiteSpace(request.Name))
+                return BadRequest(new { message = "Name, email, and password are required." });
+
+            await _authService.RegisterAsync(request);
             return Ok(new { message = "Registration successful." });
         }
         catch (ApplicationException ex)
         {
-            // Known application-level errors (validation, duplicate email, etc.)
-            _logger.LogWarning(ex, "Registration failed due to application error");
+            _logger.LogWarning(ex, "Registration failed with validation error: {Message}", ex.Message);
             return BadRequest(new { message = ex.Message });
         }
         catch (Exception ex)
         {
-            // Unexpected errors should not crash the process
             _logger.LogError(ex, "Unexpected error during registration");
-            return StatusCode(500, new { message = "An unexpected error occurred." });
+            return StatusCode(500, new { message = "An unexpected error occurred. Please try again later." });
         }
     }
 
+    /// <summary>
+    /// Login with email and password
+    /// </summary>
+    /// <param name="request">Login credentials</param>
+    /// <returns>JWT token and user information</returns>
+    /// <response code="200">Login successful</response>
+    /// <response code="400">Invalid email or password</response>
+    /// <response code="500">Server error</response>
     [HttpPost("login")]
-    public async Task<IActionResult> Login([FromBody] MarketplaceBackend.DTOs.LoginDto dto, [FromServices] MarketplaceBackend.Interfaces.IAuthService auth)
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+    public async Task<IActionResult> Login([FromBody] LoginRequest request)
     {
-        try
-        {
-            var res = await auth.LoginAsync(dto);
-            return Ok(new { token = res.token, user = new { id = res.user.id, name = res.user.name, email = res.user.email, role = res.user.role } });
-        }
-        catch (ApplicationException ex)
-        {
-            return Unauthorized(new { message = ex.Message });
-        }
-    }
+         try
+            {
+                if (request == null)
+                    return BadRequest(new { message = "Request body is required." });
 
-    private string GenerateToken(User user)
-    {
-        var jwtKey = _config["Jwt:Key"] ?? "VerySecretKey12345";
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
-        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+                var response = await _authService.LoginAsync(request);
 
-        var claims = new[]
-        {
-            new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
-            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
-            new Claim(ClaimTypes.Role, user.Role == 1 ? "seller" : "buyer"),
-            new Claim(ClaimTypes.Name, user.Name)
-        };
-
-        var token = new JwtSecurityToken(claims: claims, expires: DateTime.UtcNow.AddDays(7), signingCredentials: creds);
-        return new JwtSecurityTokenHandler().WriteToken(token);
-    }
-
-    private static string HashPassword(string password)
-    {
-        using var sha = SHA256.Create();
-        var bytes = Encoding.UTF8.GetBytes(password);
-        var hash = sha.ComputeHash(bytes);
-        return Convert.ToBase64String(hash);
-    }
-
-    private static bool VerifyPassword(string password, string hash)
-    {
-        return HashPassword(password) == hash;
+                return Ok(new
+                {
+                    token = response.Token,
+                    user = new
+                    {
+                        id = response.User.Id,
+                        name = response.User.Name,
+                        email = response.User.Email,
+                        role = response.User.Role // now FIXED (admin/seller/buyer)
+                    }
+                });
+            }
+            catch (ApplicationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (Exception)
+            {
+                return StatusCode(500, new { message = "Server error." });
+            }
+        
     }
 }
-
-// DTO types are defined in `MarketplaceBackend.DTOs.AuthDtos` - remove local duplicates
