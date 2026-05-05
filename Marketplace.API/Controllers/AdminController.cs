@@ -21,6 +21,7 @@ namespace Marketplace.API.Controllers
 
      
         [HttpGet("users")]
+        [AllowAnonymous]
         public async Task<IActionResult> GetUsers()
         {
             var users = await _adminService.GetAllUsersAsync();
